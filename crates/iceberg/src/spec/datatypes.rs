@@ -26,7 +26,7 @@ use std::sync::{Arc, OnceLock};
 
 use ::serde::de::{MapAccess, Visitor};
 use serde::de::{Error, IntoDeserializer};
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value as JsonValue;
 
 use super::values::Literal;
@@ -417,7 +417,10 @@ impl<'de> Deserialize<'de> for StructType {
                 let mut fields = None;
                 while let Some(key) = map.next_key()? {
                     match key {
-                        Field::Type => (),
+                        Field::Type => {
+                            // Skip the type field as we already know it's a struct
+                            let _: String = map.next_value()?;
+                        }
                         Field::Fields => {
                             if fields.is_some() {
                                 return Err(serde::de::Error::duplicate_field("fields"));
@@ -426,9 +429,11 @@ impl<'de> Deserialize<'de> for StructType {
                         }
                     }
                 }
-                let fields: Vec<NestedFieldRef> =
-                    fields.ok_or_else(|| de::Error::missing_field("fields"))?;
-
+                // let fields: Vec<NestedFieldRef> =
+                //     fields.ok_or_else(|| de::Error::missing_field("fields"))?;
+                //
+                // Ok(StructType::new(fields))
+                let fields = fields.unwrap_or_default();
                 Ok(StructType::new(fields))
             }
         }

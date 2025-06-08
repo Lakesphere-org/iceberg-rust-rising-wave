@@ -381,10 +381,12 @@ impl ManifestWriter {
         // Write manifest entries
         for entry in std::mem::take(&mut self.manifest_entries) {
             let value = match self.metadata.format_version {
-                FormatVersion::V1 => to_value(ManifestEntryV1::try_from(entry, &partition_type)?)?
-                    .resolve(&avro_schema)?,
-                FormatVersion::V2 => to_value(ManifestEntryV2::try_from(entry, &partition_type)?)?
-                    .resolve(&avro_schema)?,
+                FormatVersion::V1 => {
+                    to_value(ManifestEntryV1::try_from(entry)?)?.resolve(&avro_schema)?
+                }
+                FormatVersion::V2 => {
+                    to_value(ManifestEntryV2::try_from(entry)?)?.resolve(&avro_schema)?
+                }
             };
 
             avro_writer.append(value)?;
@@ -509,6 +511,7 @@ mod tests {
                 .build()
                 .unwrap(),
         );
+        let copied_schema = (*schema).clone();
         let metadata = ManifestMetadata {
             schema_id: 0,
             schema: schema.clone(),
@@ -542,7 +545,9 @@ mod tests {
                         split_offsets: vec![4],
                         equality_ids: Vec::new(),
                         sort_order_id: None,
-                        partition_spec_id: 0
+                        partition_spec_id: 0,
+                        partition_type: Default::default(),
+                        schema: copied_schema.clone(),
                     },
                 },
                 ManifestEntry {
@@ -567,7 +572,9 @@ mod tests {
                         split_offsets: vec![4],
                         equality_ids: Vec::new(),
                         sort_order_id: None,
-                        partition_spec_id: 0
+                        partition_spec_id: 0,
+                        partition_type: Default::default(),
+                        schema: copied_schema.clone(),
                     },
                 },
                 ManifestEntry {
@@ -592,7 +599,9 @@ mod tests {
                         split_offsets: vec![4],
                         equality_ids: Vec::new(),
                         sort_order_id: None,
-                        partition_spec_id: 0
+                        partition_spec_id: 0,
+                        partition_type: Default::default(),
+                        schema: copied_schema.clone(),
                     },
                 },
             ];

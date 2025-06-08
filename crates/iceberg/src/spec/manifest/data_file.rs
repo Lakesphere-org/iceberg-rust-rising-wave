@@ -20,7 +20,8 @@ use std::io::{Read, Write};
 use std::str::FromStr;
 
 use apache_avro::{from_value, to_value, Reader as AvroReader, Writer as AvroWriter};
-use serde_derive::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 
 use super::_serde::DataFileSerde;
@@ -151,6 +152,49 @@ pub struct DataFile {
     /// This field is not included in spec. It is just store in memory representation used
     /// in process.
     pub(crate) partition_spec_id: i32,
+
+    /// fullfiil
+    #[builder(setter(strip_option))]
+    pub(crate) partition_type: StructType,
+    /// # TODO
+    /// fullfiil
+    #[builder(setter(strip_option))]
+    pub(crate) schema: Schema,
+}
+
+impl Serialize for DataFile {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where S: serde::Serializer {
+        let mut state = serializer.serialize_struct("DataFile", 18)?;
+        let raw_data_file = DataFileSerde::try_from(self.clone(), false).unwrap();
+        state.serialize_field("schema", &self.schema)?;
+        state.serialize_field("partition_type", &self.partition_type)?;
+        state.serialize_field("partition_spec_id", &self.partition_spec_id)?;
+        state.serialize_field("raw", &raw_data_file)?;
+        state.end()
+    }
+}
+impl<'de> Deserialize<'de> for DataFile {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where D: serde::Deserializer<'de> {
+        #[derive(Deserialize)]
+        struct RawDataFile {
+            schema: Schema,
+            partition_spec_id: i32,
+            partition_type: StructType,
+            raw: DataFileSerde,
+        }
+        let raw_data_file = RawDataFile::deserialize(deserializer)?;
+        let data_file = raw_data_file
+            .raw
+            .try_into(
+                raw_data_file.partition_spec_id,
+                &raw_data_file.partition_type,
+                &raw_data_file.schema,
+            )
+            .unwrap();
+        Ok(data_file)
+    }
 }
 
 impl DataFile {
@@ -265,8 +309,7 @@ pub fn write_data_files_to_avro<W: Write>(
     let mut writer = AvroWriter::new(&avro_schema, writer);
 
     for data_file in data_files {
-        let value = to_value(DataFileSerde::try_from(data_file, partition_type, true)?)?
-            .resolve(&avro_schema)?;
+        let value = to_value(DataFileSerde::try_from(data_file, true)?)?.resolve(&avro_schema)?;
         writer.append(value)?;
     }
 

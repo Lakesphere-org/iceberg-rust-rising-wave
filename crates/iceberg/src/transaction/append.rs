@@ -291,7 +291,7 @@ impl<'a> MergeAppendAction<'a> {
 mod tests {
     use crate::scan::tests::TableTestFixture;
     use crate::spec::{
-        DataContentType, DataFileBuilder, DataFileFormat, Literal, Struct, MAIN_BRANCH,
+        DataContentType, DataFileBuilder, DataFileFormat, Literal, Struct, StructType, MAIN_BRANCH,
     };
     use crate::transaction::tests::make_v2_minimal_table;
     use crate::transaction::Transaction;
@@ -313,6 +313,8 @@ mod tests {
             .record_count(1)
             .partition_spec_id(table.metadata().default_partition_spec_id())
             .partition(Struct::from_iter([Some(Literal::string("test"))]))
+            .partition_type(StructType::default())
+            .schema(table.metadata().current_schema().as_ref().clone())
             .build()
             .unwrap();
         assert!(action.add_data_files(vec![data_file.clone()]).is_err());
@@ -326,6 +328,8 @@ mod tests {
             .record_count(1)
             .partition_spec_id(table.metadata().default_partition_spec_id())
             .partition(Struct::from_iter([Some(Literal::long(300))]))
+            .schema(table.metadata().current_schema().as_ref().clone())
+            .partition_type(StructType::default())
             .build()
             .unwrap();
         action.add_data_files(vec![data_file.clone()]).unwrap();

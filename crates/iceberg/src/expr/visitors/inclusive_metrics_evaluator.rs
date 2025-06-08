@@ -1997,6 +1997,8 @@ mod test {
             equality_ids: vec![],
             sort_order_id: None,
             partition_spec_id: 0,
+            partition_type: Default::default(),
+            schema: Schema::builder().build().unwrap(),
         }
     }
 
@@ -2019,6 +2021,8 @@ mod test {
             equality_ids: vec![],
             sort_order_id: None,
             partition_spec_id: 0,
+            partition_type: Default::default(),
+            schema: Schema::builder().build().unwrap(),
         }
     }
 
@@ -2077,6 +2081,8 @@ mod test {
             equality_ids: vec![],
             sort_order_id: None,
             partition_spec_id: 0,
+            partition_type: Default::default(),
+            schema: Schema::builder().build().unwrap(),
         }
     }
     fn get_test_file_2() -> DataFile {
@@ -2104,6 +2110,8 @@ mod test {
             equality_ids: vec![],
             sort_order_id: None,
             partition_spec_id: 0,
+            partition_type: Default::default(),
+            schema: Schema::builder().build().unwrap(),
         }
     }
 
@@ -2132,6 +2140,8 @@ mod test {
             equality_ids: vec![],
             sort_order_id: None,
             partition_spec_id: 0,
+            partition_type: Default::default(),
+            schema: Schema::builder().build().unwrap(),
         }
     }
 
@@ -2160,6 +2170,8 @@ mod test {
             equality_ids: vec![],
             sort_order_id: None,
             partition_spec_id: 0,
+            partition_type: Default::default(),
+            schema: Schema::builder().build().unwrap(),
         }
     }
 }

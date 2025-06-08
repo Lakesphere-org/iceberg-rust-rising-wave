@@ -268,7 +268,9 @@ mod test {
 
     use crate::arrow::arrow_schema_to_schema;
     use crate::io::FileIOBuilder;
-    use crate::spec::{DataContentType, DataFileFormat, NestedField, PrimitiveType, Schema, Type};
+    use crate::spec::{
+        DataContentType, DataFileFormat, NestedField, PrimitiveType, Schema, StructType, Type,
+    };
     use crate::writer::base_writer::data_file_writer::DataFileWriterBuilder;
     use crate::writer::base_writer::equality_delete_writer::{
         EqualityDeleteFileWriterBuilder, EqualityDeleteWriterConfig,
@@ -320,7 +322,11 @@ mod test {
                 location_gen.clone(),
                 file_name_gen.clone(),
             );
-            DataFileWriterBuilder::new(pw.clone(), None, 0)
+            DataFileWriterBuilder::new(
+                pw.clone(),
+                None,
+                0,
+            )
         };
         let position_delete_writer_builder = {
             let pw = ParquetWriterBuilder::new(

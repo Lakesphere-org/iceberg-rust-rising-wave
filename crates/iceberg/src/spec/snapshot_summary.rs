@@ -762,6 +762,8 @@ mod tests {
             equality_ids: vec![],
             sort_order_id: Some(0),
             partition_spec_id: 0,
+            partition_type: Default::default(),
+            schema: Schema::builder().build().unwrap(),
         };
 
         let file2 = DataFile {
@@ -790,6 +792,8 @@ mod tests {
             equality_ids: vec![],
             sort_order_id: Some(0),
             partition_spec_id: 0,
+            partition_type: Default::default(),
+            schema: Schema::builder().build().unwrap(),
         };
 
         collector.add_file(&file1, schema.clone(), partition_spec.clone());
@@ -894,6 +898,8 @@ mod tests {
                 equality_ids: vec![],
                 sort_order_id: None,
                 partition_spec_id: 0,
+                partition_type: Default::default(),
+                schema: Schema::builder().build().unwrap(),
             },
             schema.clone(),
             partition_spec.clone(),
@@ -918,6 +924,8 @@ mod tests {
                 equality_ids: vec![],
                 sort_order_id: None,
                 partition_spec_id: 0,
+                partition_type: Default::default(),
+                schema: Schema::builder().build().unwrap(),
             },
             schema.clone(),
             partition_spec.clone(),
@@ -968,6 +976,8 @@ mod tests {
                 equality_ids: vec![],
                 sort_order_id: None,
                 partition_spec_id: 0,
+                partition_type: Default::default(),
+                schema: Schema::builder().build().unwrap(),
             },
             schema.clone(),
             partition_spec.clone(),
