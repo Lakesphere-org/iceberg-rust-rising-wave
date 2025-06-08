@@ -31,6 +31,8 @@ pub struct DataFileWriterBuilder<B: FileWriterBuilder> {
     inner: B,
     partition_value: Option<Struct>,
     partition_spec_id: i32,
+    partition_type: StructType,
+    schema: Schema,
 }
 
 impl<B: FileWriterBuilder> DataFileWriterBuilder<B> {
@@ -38,12 +40,16 @@ impl<B: FileWriterBuilder> DataFileWriterBuilder<B> {
     pub fn new(
         inner: B,
         partition_value: Option<Struct>,
-        partition_spec_id: i32
+        partition_spec_id: i32,
+        partition_type: StructType,
+        schema: Schema,
     ) -> Self {
         Self {
             inner,
             partition_value,
-            partition_spec_id
+            partition_spec_id,
+            partition_type,
+            schema,
         }
     }
 
@@ -63,8 +69,8 @@ impl<B: FileWriterBuilder> IcebergWriterBuilder for DataFileWriterBuilder<B> {
             inner_writer: Some(self.inner.clone().build().await?),
             partition_value: self.partition_value.unwrap_or(Struct::empty()),
             partition_spec_id: self.partition_spec_id,
-            // partition_type: self.partition_type,
-            // schema: self.schema.clone(),
+            partition_type: self.partition_type,
+            schema: self.schema.clone(),
         })
     }
 }
@@ -75,8 +81,8 @@ pub struct DataFileWriter<B: FileWriterBuilder> {
     inner_writer: Option<B::R>,
     partition_value: Struct,
     partition_spec_id: i32,
-    // partition_type: StructType,
-    // schema: Schema,
+    partition_type: StructType,
+    schema: Schema,
 }
 
 #[async_trait::async_trait]
@@ -95,8 +101,8 @@ impl<B: FileWriterBuilder> IcebergWriter for DataFileWriter<B> {
                 res.content(DataContentType::Data);
                 res.partition(self.partition_value.clone());
                 res.partition_spec_id(self.partition_spec_id);
-                // res.partition_type(self.partition_type.clone());
-                // res.schema(self.schema.clone());
+                res.partition_type(self.partition_type.clone());
+                res.schema(self.schema.clone());
                 res.build().expect("Guaranteed to be valid")
             })
             .collect_vec())
@@ -171,7 +177,7 @@ mod test {
         );
 
         let mut data_file_writer =
-            DataFileWriterBuilder::new(pw, None, 0)
+            DataFileWriterBuilder::new(pw, None, 0, StructType::default(), copy_schema)
                 .build()
                 .await
                 .unwrap();
@@ -257,7 +263,9 @@ mod test {
         let mut data_file_writer = DataFileWriterBuilder::new(
             parquet_writer_builder,
             Some(partition_value.clone()),
-            0
+            0,
+            partition_type,
+            schema,
         )
         // .with_partition_type(partition_type)
         .build()

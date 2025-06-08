@@ -326,6 +326,8 @@ mod test {
                 pw.clone(),
                 None,
                 0,
+                StructType::new(vec![]),
+                (*schema).clone(),
             )
         };
         let position_delete_writer_builder = {
