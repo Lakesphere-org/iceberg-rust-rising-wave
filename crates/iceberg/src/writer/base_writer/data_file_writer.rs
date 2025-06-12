@@ -20,7 +20,7 @@
 use arrow_array::RecordBatch;
 use itertools::Itertools;
 
-use crate::spec::{DataContentType, DataFile, SchemaRef, Struct};
+use crate::spec::{DataContentType, DataFile, Schema, SchemaRef, Struct, StructType};
 use crate::writer::file_writer::{FileWriter, FileWriterBuilder};
 use crate::writer::{CurrentFileStatus, IcebergWriter, IcebergWriterBuilder};
 use crate::Result;
@@ -31,17 +31,33 @@ pub struct DataFileWriterBuilder<B: FileWriterBuilder> {
     inner: B,
     partition_value: Option<Struct>,
     partition_spec_id: i32,
+    partition_type: StructType,
+    schema: Schema,
 }
 
 impl<B: FileWriterBuilder> DataFileWriterBuilder<B> {
     /// Create a new `DataFileWriterBuilder` using a `FileWriterBuilder`.
-    pub fn new(inner: B, partition_value: Option<Struct>, partition_spec_id: i32) -> Self {
+    pub fn new(
+        inner: B,
+        partition_value: Option<Struct>,
+        partition_spec_id: i32,
+        partition_type: StructType,
+        schema: Schema,
+    ) -> Self {
         Self {
             inner,
             partition_value,
             partition_spec_id,
+            partition_type,
+            schema,
         }
     }
+
+    // /// Set the partition type for the data file.
+    // pub fn with_partition_type(mut self, partition_type: StructType) -> Self {
+    //     self.partition_type = partition_type;
+    //     self
+    // }
 }
 
 #[async_trait::async_trait]
@@ -53,6 +69,8 @@ impl<B: FileWriterBuilder> IcebergWriterBuilder for DataFileWriterBuilder<B> {
             inner_writer: Some(self.inner.clone().build().await?),
             partition_value: self.partition_value.unwrap_or(Struct::empty()),
             partition_spec_id: self.partition_spec_id,
+            partition_type: self.partition_type,
+            schema: self.schema.clone(),
         })
     }
 }
@@ -63,6 +81,8 @@ pub struct DataFileWriter<B: FileWriterBuilder> {
     inner_writer: Option<B::R>,
     partition_value: Struct,
     partition_spec_id: i32,
+    partition_type: StructType,
+    schema: Schema,
 }
 
 #[async_trait::async_trait]
@@ -81,6 +101,8 @@ impl<B: FileWriterBuilder> IcebergWriter for DataFileWriter<B> {
                 res.content(DataContentType::Data);
                 res.partition(self.partition_value.clone());
                 res.partition_spec_id(self.partition_spec_id);
+                res.partition_type(self.partition_type.clone());
+                res.schema(self.schema.clone());
                 res.build().expect("Guaranteed to be valid")
             })
             .collect_vec())
@@ -119,7 +141,8 @@ mod test {
 
     use crate::io::FileIOBuilder;
     use crate::spec::{
-        DataContentType, DataFileFormat, Literal, NestedField, PrimitiveType, Schema, Struct, Type,
+        DataContentType, DataFileFormat, Literal, NestedField, PrimitiveType, Schema, Struct,
+        StructType, Type,
     };
     use crate::writer::base_writer::data_file_writer::DataFileWriterBuilder;
     use crate::writer::file_writer::location_generator::test::MockLocationGenerator;
@@ -144,7 +167,7 @@ mod test {
                 NestedField::required(4, "bar", Type::Primitive(PrimitiveType::String)).into(),
             ])
             .build()?;
-
+        let copy_schema = schema.clone();
         let pw = ParquetWriterBuilder::new(
             WriterProperties::builder().build(),
             Arc::new(schema),
@@ -153,10 +176,11 @@ mod test {
             file_name_gen,
         );
 
-        let mut data_file_writer = DataFileWriterBuilder::new(pw, None, 0)
-            .build()
-            .await
-            .unwrap();
+        let mut data_file_writer =
+            DataFileWriterBuilder::new(pw, None, 0, StructType::default(), copy_schema)
+                .build()
+                .await
+                .unwrap();
 
         let arrow_schema = arrow_schema::Schema::new(vec![
             Field::new("foo", DataType::Int32, false).with_metadata(HashMap::from([(
@@ -219,7 +243,13 @@ mod test {
                 NestedField::required(6, "name", Type::Primitive(PrimitiveType::String)).into(),
             ])
             .build()?;
-
+        let copy_schema = schema.clone();
+        let partition_type = StructType::new(vec![NestedField::required(
+            5,
+            "id",
+            Type::Primitive(PrimitiveType::Int),
+        )
+        .into()]);
         let partition_value = Struct::from_iter([Some(Literal::int(1))]);
 
         let parquet_writer_builder = ParquetWriterBuilder::new(
@@ -230,10 +260,16 @@ mod test {
             file_name_gen,
         );
 
-        let mut data_file_writer =
-            DataFileWriterBuilder::new(parquet_writer_builder, Some(partition_value.clone()), 0)
-                .build()
-                .await?;
+        let mut data_file_writer = DataFileWriterBuilder::new(
+            parquet_writer_builder,
+            Some(partition_value.clone()),
+            0,
+            partition_type,
+            schema,
+        )
+        // .with_partition_type(partition_type)
+        .build()
+        .await?;
 
         let arrow_schema = arrow_schema::Schema::new(vec![
             Field::new("id", DataType::Int32, false).with_metadata(HashMap::from([(

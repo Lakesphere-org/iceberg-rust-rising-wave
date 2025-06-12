@@ -352,6 +352,9 @@ impl ParquetWriter {
                 HashMap::new(),
             )?;
             builder.partition_spec_id(table_metadata.default_partition_spec_id());
+
+            builder.partition_type(table_metadata.default_partition_type().clone());
+            builder.schema((*table_metadata.current_schema().as_ref()).clone());
             let data_file = builder.build().unwrap();
             data_files.push(data_file);
         }
@@ -609,7 +612,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::arrow::schema_to_arrow_schema;
+    use crate::arrow::{arrow_schema_to_schema, schema_to_arrow_schema};
     use crate::io::FileIOBuilder;
     use crate::spec::{PrimitiveLiteral, Struct, *};
     use crate::writer::file_writer::location_generator::test::MockLocationGenerator;
@@ -809,6 +812,8 @@ mod tests {
             .content(crate::spec::DataContentType::Data)
             .partition(Struct::empty())
             .partition_spec_id(0)
+            .partition_type(StructType::default())
+            .schema(arrow_schema_to_schema(&(*schema).clone()).unwrap())
             .build()
             .unwrap();
 
@@ -843,6 +848,7 @@ mod tests {
 
         // prepare data
         let schema = nested_schema_for_test();
+        let copied_schema = schema.clone();
         let arrow_schema: ArrowSchemaRef = Arc::new((&schema).try_into().unwrap());
         let col0 = Arc::new(Int64Array::from_iter_values(0..1024)) as ArrayRef;
         let col1 = Arc::new(StructArray::new(
@@ -1005,6 +1011,8 @@ mod tests {
             .content(crate::spec::DataContentType::Data)
             .partition(Struct::empty())
             .partition_spec_id(0)
+            .partition_type(StructType::default())
+            .schema(copied_schema.clone())
             .build()
             .unwrap();
 
@@ -1196,6 +1204,8 @@ mod tests {
             .content(crate::spec::DataContentType::Data)
             .partition(Struct::empty())
             .partition_spec_id(0)
+            .partition_type(StructType::default())
+            .schema(arrow_schema_to_schema(&(*arrow_schema.clone())).unwrap())
             .build()
             .unwrap();
 
@@ -1345,6 +1355,8 @@ mod tests {
             .content(crate::spec::DataContentType::Data)
             .partition(Struct::empty())
             .partition_spec_id(0)
+            .partition_type(StructType::default())
+            .schema(arrow_schema_to_schema(&arrow_schema.clone()).unwrap())
             .build()
             .unwrap();
         assert_eq!(
@@ -1397,6 +1409,8 @@ mod tests {
             .unwrap()
             .content(crate::spec::DataContentType::Data)
             .partition(Struct::empty())
+            .partition_type(StructType::default())
+            .schema(arrow_schema_to_schema(&(*arrow_schema).clone()).unwrap())
             .partition_spec_id(0)
             .build()
             .unwrap();
@@ -1457,6 +1471,8 @@ mod tests {
             .content(crate::spec::DataContentType::Data)
             .partition(Struct::empty())
             .partition_spec_id(0)
+            .partition_type(StructType::default())
+            .schema(arrow_schema_to_schema(&(*arrow_schema).clone()).unwrap())
             .build()
             .unwrap();
         assert_eq!(
@@ -1650,6 +1666,8 @@ mod tests {
             .content(crate::spec::DataContentType::Data)
             .partition(Struct::empty())
             .partition_spec_id(0)
+            .schema(arrow_schema_to_schema(&arrow_schema).unwrap())
+            .partition_type(StructType::default())
             .build()
             .unwrap();
 
@@ -1787,6 +1805,8 @@ mod tests {
             .content(crate::spec::DataContentType::Data)
             .partition(Struct::empty())
             .partition_spec_id(0)
+            .partition_type(StructType::default())
+            .schema(arrow_schema_to_schema(&arrow_schema.clone()).unwrap())
             .build()
             .unwrap();
 
@@ -1954,6 +1974,8 @@ mod tests {
             .content(crate::spec::DataContentType::Data)
             .partition(Struct::empty())
             .partition_spec_id(0)
+            .schema(arrow_schema_to_schema(&arrow_schema.clone()).unwrap())
+            .partition_type(StructType::default())
             .build()
             .unwrap();
 
@@ -2132,6 +2154,8 @@ mod tests {
             .content(crate::spec::DataContentType::Data)
             .partition(Struct::empty())
             .partition_spec_id(0)
+            .partition_type(StructType::default())
+            .schema(arrow_schema_to_schema(&arrow_schema.clone()).unwrap())
             .build()
             .unwrap();
 

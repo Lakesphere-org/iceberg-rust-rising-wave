@@ -637,12 +637,12 @@ pub mod tests {
     use tera::{Context, Tera};
     use uuid::Uuid;
 
-    use crate::arrow::ArrowReaderBuilder;
+    use crate::arrow::{arrow_schema_to_schema, schema_to_arrow_schema, ArrowReaderBuilder};
     use crate::expr::{BoundPredicate, Reference};
     use crate::io::{FileIO, OutputFile};
     use crate::scan::FileScanTask;
     use crate::spec::{
-        DataContentType, DataFileBuilder, DataFileFormat, Datum, Literal, ManifestEntry,
+        DataContentType, DataFile, DataFileBuilder, DataFileFormat, Datum, Literal, ManifestEntry,
         ManifestListWriter, ManifestStatus, ManifestWriterBuilder, NestedField, PartitionSpec,
         PrimitiveType, Schema, Struct, StructType, TableMetadata, Type,
     };
@@ -765,7 +765,6 @@ pub mod tests {
                 .unwrap();
             let current_schema = current_snapshot.schema(self.table.metadata()).unwrap();
             let current_partition_spec = self.table.metadata().default_partition_spec();
-
             // Write data files
             let mut writer = ManifestWriterBuilder::new(
                 self.next_manifest_file(),
@@ -788,6 +787,8 @@ pub mod tests {
                                 .file_size_in_bytes(100)
                                 .record_count(1)
                                 .partition(Struct::from_iter([Some(Literal::long(100))]))
+                                .partition_type(StructType::new(vec![]))
+                                .schema((*current_schema).clone())
                                 .key_metadata(None)
                                 .build()
                                 .unwrap(),
@@ -811,6 +812,8 @@ pub mod tests {
                                 .file_size_in_bytes(100)
                                 .record_count(1)
                                 .partition(Struct::from_iter([Some(Literal::long(200))]))
+                                .partition_type(StructType::new(vec![]))
+                                .schema((*current_schema).clone())
                                 .build()
                                 .unwrap(),
                         )
@@ -833,6 +836,8 @@ pub mod tests {
                                 .file_size_in_bytes(100)
                                 .record_count(1)
                                 .partition(Struct::from_iter([Some(Literal::long(300))]))
+                                .partition_type(StructType::new(vec![]))
+                                .schema((*current_schema).clone())
                                 .build()
                                 .unwrap(),
                         )
@@ -1004,6 +1009,8 @@ pub mod tests {
                                 .file_size_in_bytes(100)
                                 .record_count(1)
                                 .partition(empty_partition.clone())
+                                .partition_type(StructType::new(vec![]))
+                                .schema(current_schema.as_ref().clone())
                                 .key_metadata(None)
                                 .build()
                                 .unwrap(),
@@ -1028,6 +1035,8 @@ pub mod tests {
                                 .file_size_in_bytes(100)
                                 .record_count(1)
                                 .partition(empty_partition.clone())
+                                .partition_type(StructType::new(vec![]))
+                                .schema((*current_schema).clone())
                                 .build()
                                 .unwrap(),
                         )
@@ -1051,6 +1060,8 @@ pub mod tests {
                                 .file_size_in_bytes(100)
                                 .record_count(1)
                                 .partition(empty_partition.clone())
+                                .partition_type(StructType::new(vec![]))
+                                .schema((*current_schema).clone())
                                 .build()
                                 .unwrap(),
                         )
@@ -1769,6 +1780,7 @@ pub mod tests {
             assert_eq!(task.project_field_ids, deserialized.project_field_ids);
             assert_eq!(task.predicate, deserialized.predicate);
             assert_eq!(task.schema, deserialized.schema);
+            assert_eq!(task.data_file, deserialized.data_file);
         };
 
         // without predicate
@@ -1782,8 +1794,30 @@ pub mod tests {
                 .build()
                 .unwrap(),
         );
+
         let task = FileScanTask {
             data_file_path: "data_file_path".to_string(),
+            data_file: DataFile {
+                content: DataContentType::Data,
+                file_path: "s3a://icebergdata/demo/s1/t1/data/00000-0-ba56fbfa-f2ff-40c9-bb27-565ad6dc2be8-00000.parquet".to_string(),
+                file_format: DataFileFormat::Parquet,
+                partition: Struct::empty(),
+                record_count: 1,
+                file_size_in_bytes: 5442,
+                column_sizes: HashMap::from([(1, 61), (2, 73)]),
+                value_counts: HashMap::from([(1, 1), (2, 1)]),
+                null_value_counts: HashMap::from([(1, 0), (2, 0)]),
+                nan_value_counts: HashMap::new(),
+                lower_bounds: HashMap::new(),
+                upper_bounds: HashMap::new(),
+                key_metadata: Some(Vec::new()),
+                split_offsets: vec![4],
+                equality_ids: Vec::new(),
+                sort_order_id: None,
+                partition_spec_id: 0,
+               partition_type: StructType::new(vec![]),
+                schema:  (*schema).clone(),
+            },
             data_file_content: DataContentType::Data,
             start: 0,
             length: 100,
@@ -1802,6 +1836,27 @@ pub mod tests {
         // with predicate
         let task = FileScanTask {
             data_file_path: "data_file_path".to_string(),
+            data_file: DataFile {
+                content: DataContentType::Data,
+                file_path: "s3a://icebergdata/demo/s1/t1/data/00000-0-ba56fbfa-f2ff-40c9-bb27-565ad6dc2be8-00000.parquet".to_string(),
+                file_format: DataFileFormat::Parquet,
+                partition: Struct::empty(),
+                record_count: 1,
+                file_size_in_bytes: 5442,
+                column_sizes: HashMap::from([(1, 61), (2, 73)]),
+                value_counts: HashMap::from([(1, 1), (2, 1)]),
+                null_value_counts: HashMap::from([(1, 0), (2, 0)]),
+                nan_value_counts: HashMap::new(),
+                lower_bounds: HashMap::new(),
+                upper_bounds: HashMap::new(),
+                key_metadata: Some(Vec::new()),
+                split_offsets: vec![4],
+                equality_ids: Vec::new(),
+                sort_order_id: None,
+                partition_spec_id: 0,
+               partition_type: StructType::new(vec![]),
+                schema: (*schema).clone(),
+            },
             data_file_content: DataContentType::Data,
             start: 0,
             length: 100,

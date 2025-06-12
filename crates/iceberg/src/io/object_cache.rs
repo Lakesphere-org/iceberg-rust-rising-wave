@@ -193,7 +193,8 @@ mod tests {
     use crate::io::{FileIO, OutputFile};
     use crate::spec::{
         DataContentType, DataFileBuilder, DataFileFormat, Literal, ManifestEntry,
-        ManifestListWriter, ManifestStatus, ManifestWriterBuilder, Struct, TableMetadata,
+        ManifestListWriter, ManifestStatus, ManifestWriterBuilder, Struct, StructType,
+        TableMetadata,
     };
     use crate::table::Table;
     use crate::TableIdent;
@@ -284,6 +285,8 @@ mod tests {
                                 .file_size_in_bytes(100)
                                 .record_count(1)
                                 .partition(Struct::from_iter([Some(Literal::long(100))]))
+                                .partition_type(StructType::default())
+                                .schema(current_schema.as_ref().clone())
                                 .build()
                                 .unwrap(),
                         )

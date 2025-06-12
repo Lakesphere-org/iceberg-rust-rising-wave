@@ -34,13 +34,13 @@ pub(super) struct ManifestEntryV2 {
 }
 
 impl ManifestEntryV2 {
-    pub fn try_from(value: ManifestEntry, partition_type: &StructType) -> Result<Self, Error> {
+    pub fn try_from(value: ManifestEntry) -> Result<Self, Error> {
         Ok(Self {
             status: value.status as i32,
             snapshot_id: value.snapshot_id,
             sequence_number: value.sequence_number,
             file_sequence_number: value.file_sequence_number,
-            data_file: DataFileSerde::try_from(value.data_file, partition_type, false)?,
+            data_file: DataFileSerde::try_from(value.data_file, false)?,
         })
     }
 
@@ -70,11 +70,11 @@ pub(super) struct ManifestEntryV1 {
 }
 
 impl ManifestEntryV1 {
-    pub fn try_from(value: ManifestEntry, partition_type: &StructType) -> Result<Self, Error> {
+    pub fn try_from(value: ManifestEntry) -> Result<Self, Error> {
         Ok(Self {
             status: value.status as i32,
             snapshot_id: value.snapshot_id.unwrap_or_default(),
-            data_file: DataFileSerde::try_from(value.data_file, partition_type, true)?,
+            data_file: DataFileSerde::try_from(value.data_file, true)?,
         })
     }
 
@@ -124,11 +124,7 @@ pub struct DataFileSerde {
 
 impl DataFileSerde {
     /// Try to convert a `super::DataFile` to a `DataFileSerde`.
-    pub fn try_from(
-        value: super::DataFile,
-        partition_type: &StructType,
-        is_version_1: bool,
-    ) -> Result<Self, Error> {
+    pub fn try_from(value: super::DataFile, is_version_1: bool) -> Result<Self, Error> {
         let block_size_in_bytes = if is_version_1 { Some(0) } else { None };
         Ok(Self {
             content: value.content as i32,
@@ -136,7 +132,7 @@ impl DataFileSerde {
             file_format: value.file_format.to_string().to_ascii_uppercase(),
             partition: RawLiteral::try_from(
                 Literal::Struct(value.partition),
-                &Type::Struct(partition_type.clone()),
+                &Type::Struct(value.partition_type.clone()),
             )?,
             record_count: value.record_count.try_into()?,
             file_size_in_bytes: value.file_size_in_bytes.try_into()?,
@@ -218,6 +214,8 @@ impl DataFileSerde {
             equality_ids: self.equality_ids.unwrap_or_default(),
             sort_order_id: self.sort_order_id,
             partition_spec_id,
+            partition_type: partition_type.clone(),
+            schema: schema.clone(),
         })
     }
 }
@@ -352,6 +350,7 @@ mod tests {
             partition: Struct::empty(),
             record_count: 1,
             file_size_in_bytes: 875,
+
             column_sizes: HashMap::from([(1,47),(2,48),(3,52)]),
             value_counts: HashMap::from([(1,1),(2,1),(3,1)]),
             null_value_counts: HashMap::from([(1,0),(2,0),(3,0)]),
@@ -362,7 +361,9 @@ mod tests {
             split_offsets: vec![4],
             equality_ids: vec![],
             sort_order_id: Some(0),
-            partition_spec_id: 0
+            partition_spec_id: 0,
+            partition_type: StructType::new(vec![]),
+            schema: (*schema).clone(),
         }];
 
         let mut buffer = Vec::new();

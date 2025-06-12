@@ -24,7 +24,9 @@ use arrow_schema::SchemaRef as ArrowSchemaRef;
 use once_cell::sync::Lazy;
 
 use crate::arrow::schema_to_arrow_schema;
-use crate::spec::{DataFile, NestedField, PrimitiveType, Schema, SchemaRef, Struct, Type};
+use crate::spec::{
+    DataFile, NestedField, PrimitiveType, Schema, SchemaRef, Struct, StructType, Type,
+};
 use crate::writer::file_writer::{FileWriter, FileWriterBuilder};
 use crate::writer::{IcebergWriter, IcebergWriterBuilder};
 use crate::Result;
@@ -150,6 +152,8 @@ impl<B: FileWriterBuilder> SortPositionDeleteWriter<B> {
                 res.content(crate::spec::DataContentType::PositionDeletes);
                 res.partition(self.partition_value.clone());
                 res.partition_spec_id(self.partition_spec_id);
+                res.partition_type(StructType::default());
+                res.schema(Schema::builder().build().unwrap());
                 res.build().expect("Guaranteed to be valid")
             }));
         Ok(())

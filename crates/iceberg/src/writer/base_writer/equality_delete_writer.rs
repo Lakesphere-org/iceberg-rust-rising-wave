@@ -26,7 +26,7 @@ use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 
 use crate::arrow::record_batch_projector::RecordBatchProjector;
 use crate::arrow::schema_to_arrow_schema;
-use crate::spec::{DataFile, SchemaRef, Struct};
+use crate::spec::{DataFile, Schema, SchemaRef, Struct, StructType};
 use crate::writer::file_writer::{FileWriter, FileWriterBuilder};
 use crate::writer::{IcebergWriter, IcebergWriterBuilder};
 use crate::{Error, ErrorKind, Result};
@@ -159,6 +159,8 @@ impl<B: FileWriterBuilder> IcebergWriter for EqualityDeleteFileWriter<B> {
                     res.equality_ids(self.equality_ids.iter().copied().collect_vec());
                     res.partition(self.partition_value.clone());
                     res.partition_spec_id(self.partition_spec_id);
+                    res.partition_type(StructType::default());
+                    res.schema(Schema::builder().build().unwrap());
                     res.build().expect("msg")
                 })
                 .collect_vec())

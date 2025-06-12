@@ -1299,7 +1299,8 @@ mod tests {
     use crate::io::FileIO;
     use crate::scan::{FileScanTask, FileScanTaskStream};
     use crate::spec::{
-        DataContentType, DataFileFormat, Datum, NestedField, PrimitiveType, Schema, SchemaRef, Type,
+        DataContentType, DataFile, DataFileFormat, Datum, NestedField, PrimitiveType, Schema,
+        SchemaRef, Struct, Type,
     };
     use crate::ErrorKind;
 
@@ -1515,6 +1516,27 @@ message schema {
                 length: 0,
                 record_count: None,
                 data_file_path: format!("{}/1.parquet", table_location),
+                data_file: DataFile {
+                    content: DataContentType::Data,
+                    file_path: "s3a://icebergdata/demo/s1/t1/data/00000-0-ba56fbfa-f2ff-40c9-bb27-565ad6dc2be8-00000.parquet".to_string(),
+                    file_format: DataFileFormat::Parquet,
+                    partition: Struct::empty(),
+                    record_count: 1,
+                    file_size_in_bytes: 5442,
+                    column_sizes: HashMap::from([(1, 61), (2, 73)]),
+                    value_counts: HashMap::from([(1, 1), (2, 1)]),
+                    null_value_counts: HashMap::from([(1, 0), (2, 0)]),
+                    nan_value_counts: HashMap::new(),
+                    lower_bounds: HashMap::new(),
+                    upper_bounds: HashMap::new(),
+                    key_metadata: Some(Vec::new()),
+                    split_offsets: vec![4],
+                    equality_ids: Vec::new(),
+                    sort_order_id: None,
+                    partition_spec_id: 0,
+                    partition_type: Default::default(),
+                    schema:  (*schema).clone(),
+                },
                 data_file_content: DataContentType::Data,
                 data_file_format: DataFileFormat::Parquet,
                 schema: schema.clone(),
