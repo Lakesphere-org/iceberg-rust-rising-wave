@@ -494,6 +494,14 @@ impl<'a> SnapshotProduceAction<'a> {
     pub fn set_new_data_file_sequence_number(&mut self, new_data_file_sequence_number: i64) {
         self.new_data_file_sequence_number = Some(new_data_file_sequence_number);
     }
+
+    pub fn removed_data_files(&self) -> &[DataFile] {
+        &self.removed_data_files
+    }
+
+    pub fn update_properties(&mut self, properties: HashMap<String, String>) {
+        self.snapshot_properties.extend(properties);
+    }
 }
 
 pub(crate) struct MergeManifestProcess {

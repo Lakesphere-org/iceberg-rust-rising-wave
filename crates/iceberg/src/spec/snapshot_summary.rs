@@ -48,6 +48,7 @@ const TOTAL_FILE_SIZE: &str = "total-files-size";
 const CHANGED_PARTITION_COUNT_PROP: &str = "changed-partition-count";
 const CHANGED_PARTITION_PREFIX: &str = "partitions.";
 
+/// Collector for snapshot summaries.
 #[derive(Default)]
 #[allow(dead_code)]
 pub struct SnapshotSummaryCollector {
@@ -60,15 +61,17 @@ pub struct SnapshotSummaryCollector {
 
 #[allow(dead_code)]
 impl SnapshotSummaryCollector {
-    // Set properties
+    /// Set properties
     pub fn set(&mut self, key: &str, value: &str) {
         self.properties.insert(key.to_string(), value.to_string());
     }
 
+    /// Sets the limit for the number of changed partitions to include in the summary.
     pub fn set_partition_summary_limit(&mut self, limit: u64) {
         self.max_changed_partitions_for_summaries = limit;
     }
 
+    /// Returns the current summary properties.
     pub fn add_file(
         &mut self,
         data_file: &DataFile,
@@ -81,6 +84,7 @@ impl SnapshotSummaryCollector {
         }
     }
 
+    /// Removes a data file from the summary collector.
     pub fn remove_file(
         &mut self,
         data_file: &DataFile,
@@ -93,12 +97,14 @@ impl SnapshotSummaryCollector {
         }
     }
 
+    /// Adds a manifest file to the summary collector.
     pub fn add_manifest(&mut self, manifest: &ManifestFile) {
         self.trust_partition_metrics = false;
         self.partition_metrics.clear();
         self.metrics.add_manifest(manifest);
     }
 
+    /// Updates the partition metrics for a given data file.
     pub fn update_partition_metrics(
         &mut self,
         schema: SchemaRef,
@@ -116,6 +122,7 @@ impl SnapshotSummaryCollector {
         }
     }
 
+    /// Merges another summary collector into this one.
     pub fn merge(&mut self, summary: SnapshotSummaryCollector) {
         self.metrics.merge(&summary.metrics);
         self.properties.extend(summary.properties);
@@ -133,6 +140,7 @@ impl SnapshotSummaryCollector {
         }
     }
 
+    /// Builds the summary properties.
     pub fn build(&self) -> HashMap<String, String> {
         let mut properties = self.metrics.to_map();
         let changed_partitions_count = self.partition_metrics.len() as u64;

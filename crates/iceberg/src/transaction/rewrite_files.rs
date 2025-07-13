@@ -31,7 +31,7 @@ use super::{
 use crate::error::Result;
 use crate::spec::{
     DataContentType, DataFile, ManifestContentType, ManifestEntry, ManifestFile, ManifestStatus,
-    Operation,
+    Operation, SnapshotSummaryCollector,
 };
 
 pub const USE_STARTING_SEQUENCE_NUMBER: &str = "use-starting-sequence-number";
@@ -137,8 +137,45 @@ impl<'a> RewriteFilesAction<'a> {
         Ok(self)
     }
 
+    /// Update summary with rewrite metrics using SnapshotSummaryCollector
+    fn update_summary_metrics(&mut self) -> Result<()> {
+        let mut collector = SnapshotSummaryCollector::default();
+        collector.set_partition_summary_limit(0);
+
+        let schema = self
+            .snapshot_produce_action
+            .tx
+            .current_table
+            .metadata()
+            .current_schema();
+        let partition_spec = self
+            .snapshot_produce_action
+            .tx
+            .current_table
+            .metadata()
+            .default_partition_spec();
+
+        for data_file in &self.snapshot_produce_action.added_data_files {
+            collector.add_file(data_file, schema.clone(), partition_spec.clone());
+        }
+
+        // Add metrics for removed files
+        for data_file in self.snapshot_produce_action.removed_data_files() {
+            collector.remove_file(data_file, schema.clone(), partition_spec.clone());
+        }
+
+        // Get the collected metrics and set them in the snapshot properties
+        let metrics = collector.build();
+        self.snapshot_produce_action.update_properties(metrics);
+
+        Ok(())
+    }
+
     /// Finished building the action and apply it to the transaction.
-    pub async fn apply(self) -> Result<Transaction<'a>> {
+    pub async fn apply(mut self) -> Result<Transaction<'a>> {
+        // Update summary metrics before applying
+        self.update_summary_metrics()?;
+
         if self.merge_enabled {
             let process =
                 MergeManifestProcess::new(self.target_size_bytes, self.min_count_to_merge);
