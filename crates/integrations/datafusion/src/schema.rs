@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use datafusion::catalog::SchemaProvider;
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result as DFResult};
-use futures::future::try_join_all;
+use futures::future::join_all;
 use iceberg::inspect::MetadataTableType;
 use iceberg::{Catalog, NamespaceIdent, Result};
 
@@ -61,19 +61,25 @@ impl IcebergSchemaProvider {
             .iter()
             .map(|tbl| tbl.name().to_string())
             .collect();
-
-        let providers = try_join_all(
+        //modified so we dont fail on tables we cant load
+        let providers = join_all(
             table_names
                 .iter()
                 .map(|name| IcebergTableProvider::try_new(client.clone(), namespace.clone(), name))
                 .collect::<Vec<_>>(),
         )
-        .await?;
+        .await;
 
         let tables: HashMap<String, Arc<IcebergTableProvider>> = table_names
             .into_iter()
             .zip(providers.into_iter())
-            .map(|(name, provider)| (name, Arc::new(provider)))
+            .filter_map(|(name, result)| {
+                match result {
+                    Ok(provider) => Some((name, Arc::new(provider))),
+                    Err(_) => None,  // Silently skip tables that fail to load
+                }
+            })
+            // .map(|(name, provider)| (name, Arc::new(provider)))
             .collect();
 
         Ok(IcebergSchemaProvider { tables })
@@ -114,6 +120,10 @@ impl SchemaProvider for IcebergSchemaProvider {
                 MetadataTableType::try_from(metadata_table_name).map_err(DataFusionError::Plan)?;
             if let Some(table) = self.tables.get(table_name) {
                 let metadata_table = table.metadata_table(metadata_table_type);
+                // let metadata_table = table
+                //     .metadata_table(metadata_table_type)
+                //     .await
+                //     .map_err(to_datafusion_error)?;
                 return Ok(Some(Arc::new(metadata_table)));
             } else {
                 return Ok(None);

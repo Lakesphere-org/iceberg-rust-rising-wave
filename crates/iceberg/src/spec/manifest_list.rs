@@ -847,14 +847,21 @@ impl ManifestFile {
     /// This method will also initialize inherited values of [`ManifestEntry`], such as `sequence_number`.
     pub async fn load_manifest(&self, file_io: &FileIO) -> Result<Manifest> {
         let avro = file_io.new_input(&self.manifest_path)?.read().await?;
-
-        let (metadata, mut entries) = Manifest::try_from_avro_bytes(&avro)?;
+        
+        // Use spawn_blocking for CPU-intensive Avro parsing to avoid blocking the async runtime
+        // This allows other S3 fetches to proceed while parsing happens on a dedicated thread
+        let parse_result = tokio::task::spawn_blocking(move || {
+            Manifest::try_from_avro_bytes(&avro)
+        })
+        .await
+        .map_err(|e| Error::new(ErrorKind::Unexpected, format!("Spawn blocking failed: {}", e)))?;
+        
+        let (metadata, mut entries) = parse_result?;
 
         // Let entries inherit values from the manifest list entry.
         for entry in &mut entries {
             entry.inherit_data(self);
         }
-
         Ok(Manifest::new(metadata, entries))
     }
 }

@@ -490,31 +490,44 @@ fn update_totals(
     added_property: &str,
     removed_property: &str,
 ) {
-    let previous_total = previous_summary.map_or(0, |previous_summary| {
-        previous_summary
+    // Only update total if previous summary has the total property (matches Java behavior)
+    // Java code: String totalStr = previousSummary.get(totalProperty); if (totalStr != null) { ... }
+    let previous_total = if let Some(prev_summary) = previous_summary {
+        prev_summary
             .additional_properties
             .get(total_property)
-            .map_or(0, |value| value.parse::<u64>().unwrap())
-    });
+            .and_then(|value| value.parse::<u64>().ok())
+    } else {
+        None
+    };
 
-    let mut new_total = previous_total;
-    if let Some(value) = summary
-        .additional_properties
-        .get(added_property)
-        .map(|value| value.parse::<u64>().unwrap())
-    {
-        new_total += value;
+    // If previous summary doesn't have total, don't set it (matches Java behavior)
+    if let Some(mut new_total) = previous_total {
+        // Java checks: if (newTotal >= 0 && addedStr != null) before adding
+        if let Some(value) = summary
+            .additional_properties
+            .get(added_property)
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            new_total = new_total.saturating_add(value);
+        }
+        
+        // Java checks: if (newTotal >= 0 && deletedStr != null) before subtracting
+        if let Some(value) = summary
+            .additional_properties
+            .get(removed_property)
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            new_total = new_total.saturating_sub(value);
+        }
+        
+        // Set the total (with saturating operations, new_total is always >= 0 for u64)
+        // Java code: if (newTotal >= 0) { summaryBuilder.put(totalProperty, String.valueOf(newTotal)); }
+        // Note: In Java, newTotal is a signed long, so the check is needed. In Rust, u64 is unsigned.
+        summary
+            .additional_properties
+            .insert(total_property.to_string(), new_total.to_string());
     }
-    if let Some(value) = summary
-        .additional_properties
-        .get(removed_property)
-        .map(|value| value.parse::<u64>().unwrap())
-    {
-        new_total -= value;
-    }
-    summary
-        .additional_properties
-        .insert(total_property.to_string(), new_total.to_string());
 }
 
 #[cfg(test)]

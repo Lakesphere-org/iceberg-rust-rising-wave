@@ -22,20 +22,22 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use futures::{StreamExt, TryStreamExt};
 use uuid::Uuid;
 
 use crate::error::Result;
 use crate::io::FileIO;
 use crate::spec::{
-    DataContentType, DataFile, DataFileFormat, FormatVersion, MAIN_BRANCH, ManifestContentType,
-    ManifestEntry, ManifestFile, ManifestListWriter, ManifestStatus, ManifestWriter,
-    ManifestWriterBuilder, Operation, PrimitiveLiteral, Snapshot, SnapshotReference,
-    SnapshotRetention, SnapshotSummaryCollector, Struct, StructType, Summary, TableProperties,
-    UNASSIGNED_SEQUENCE_NUMBER, update_snapshot_summaries,
+    DataContentType, DataFile, DataFileFormat, FormatVersion, MAIN_BRANCH, Manifest,
+    ManifestContentType, ManifestEntry, ManifestFile, ManifestListWriter, ManifestStatus,
+    ManifestWriter, ManifestWriterBuilder, Operation, PrimitiveLiteral, Snapshot,
+    SnapshotReference, SnapshotRetention, SnapshotSummaryCollector, Struct, StructType, Summary,
+    TableProperties, UNASSIGNED_SEQUENCE_NUMBER, update_snapshot_summaries,
 };
 use crate::table::Table;
 use crate::transaction::{ActionCommit, ManifestFilterManager, ManifestWriterContext};
 use crate::utils::bin::ListPacker;
+use crate::utils::available_parallelism;
 use crate::{Error, ErrorKind, TableRequirement, TableUpdate};
 
 const META_ROOT_PATH: &str = "metadata";
@@ -51,6 +53,14 @@ pub(crate) trait SnapshotProduceOperation: Send + Sync {
         &self,
         snapshot_produce: &mut SnapshotProducer<'_>,
     ) -> impl Future<Output = Result<Vec<ManifestFile>>> + Send;
+
+    /// Get the manifest cache populated during existing_manifest().
+    /// Default implementation returns empty (for operations that don't cache).
+    /// This allows operations like RewriteFilesOperationConcurrent to share
+    /// their cached manifests with ManifestFilterManager without modifying SnapshotProducer.
+    fn get_manifest_cache(&self) -> HashMap<String, Manifest> {
+        HashMap::new()
+    }
 }
 
 pub(crate) struct DefaultManifestProcess;
@@ -83,6 +93,7 @@ pub(crate) struct SnapshotProducer<'a> {
     snapshot_properties: HashMap<String, String>,
     pub added_data_files: Vec<DataFile>,
     pub added_delete_files: Vec<DataFile>,
+    pub removed_data_files: Vec<DataFile>,
 
     // for filtering out files that are removed by action
     pub removed_data_file_paths: HashSet<String>,
@@ -115,8 +126,8 @@ impl<'a> SnapshotProducer<'a> {
         removed_delete_files: Vec<DataFile>,
     ) -> Self {
         let removed_data_file_paths = removed_data_files
-            .into_iter()
-            .map(|df| df.file_path)
+            .iter()
+            .map(|df| df.file_path.clone())
             .collect();
         let removed_delete_file_paths = removed_delete_files
             .iter()
@@ -139,6 +150,7 @@ impl<'a> SnapshotProducer<'a> {
             added_delete_files,
             removed_data_file_paths,
             removed_delete_file_paths,
+            removed_data_files,
             removed_delete_files,
             new_data_file_sequence_number: None,
             target_branch: MAIN_BRANCH.to_string(),
@@ -534,6 +546,13 @@ partition_struct: {:?}, partition_type: {:?}",
                 delete_filter_manager.drop_delete_files_older_than(min_data_seq);
                 delete_filter_manager.remove_dangling_deletes_for(&self.removed_data_file_paths);
 
+                // Get manifest cache from the operation (e.g., RewriteFilesOperationConcurrent)
+                // to avoid reloading manifests in ManifestFilterManager
+                let manifest_cache = snapshot_produce_operation.get_manifest_cache();
+                if !manifest_cache.is_empty() {
+                    delete_filter_manager.set_manifest_cache(manifest_cache);
+                }
+
                 let filtered_delete_manifests: Vec<ManifestFile> = delete_filter_manager
                     .filter_manifests(&schema, existing_delete_manifests)
                     .await?;
@@ -605,6 +624,15 @@ partition_struct: {:?}, partition_type: {:?}",
 
         for data_file in &self.added_data_files {
             summary_collector.add_file(
+                data_file,
+                table_metadata.current_schema().clone(),
+                table_metadata.default_partition_spec().clone(),
+            );
+        }
+
+        // Track removed data files
+        for data_file in &self.removed_data_files {
+            summary_collector.remove_file(
                 data_file,
                 table_metadata.current_schema().clone(),
                 table_metadata.default_partition_spec().clone(),
@@ -893,6 +921,211 @@ partition_struct: {:?}, partition_type: {:?}",
         if !files_to_delete.is_empty() {
             let non_existent_files: Vec<String> =
                 files_to_delete.iter().map(|s| s.to_string()).collect();
+
+            return Err(Error::new(
+                ErrorKind::DataInvalid,
+                format!(
+                    "Cannot delete files that are not in the current snapshot, files: {}",
+                    non_existent_files.join(", ")
+                ),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Validate data file operations using concurrent manifest processing.
+    /// This is a faster version of `validate_data_file_changes` that processes
+    /// manifests in parallel, making it suitable for tables with thousands or
+    /// millions of entries.
+    ///
+    /// This checks both:
+    /// 1. Added files don't already exist in the table (duplicate prevention)
+    /// 2. Deleted files actually exist in the table (existence validation)
+    ///
+    /// Maintains the same exception behavior as `validate_data_file_changes`.
+    pub(crate) async fn validate_data_file_changes_concurrent(&self) -> Result<()> {
+        // Early return if nothing to validate
+        if self.added_data_files.is_empty()
+            && self.added_delete_files.is_empty()
+            && self.removed_data_file_paths.is_empty()
+        {
+            return Ok(());
+        }
+
+        // Use a set - remove files as we find them
+        let files_to_delete: HashSet<&str> = self
+            .removed_data_file_paths
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+
+        let table = &self.table;
+        let branch_snapshot_ref = table.metadata().snapshot_for_ref(self.target_branch());
+
+        // If trying to delete files but no snapshot exists, that's an error
+        if !files_to_delete.is_empty() && branch_snapshot_ref.is_none() {
+            return Err(Error::new(
+                ErrorKind::DataInvalid,
+                format!(
+                    "Cannot delete files from a table with no current snapshot, files: {}",
+                    files_to_delete
+                        .iter()
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ));
+        }
+
+        let files_to_add: HashSet<&str> = self
+            .added_data_files
+            .iter()
+            .chain(self.added_delete_files.iter())
+            .map(|df| df.file_path.as_str())
+            .collect();
+
+        let mut duplicate_files = Vec::new();
+        let mut files_to_delete_remaining = HashSet::new();
+
+        // Single pass through all manifests (now concurrent with object cache and batch processing)
+        if let Some(current_snapshot) = branch_snapshot_ref {
+            let manifest_list = current_snapshot
+                .load_manifest_list(table.file_io(), table.metadata_ref().as_ref())
+                .await?;
+
+            // Convert to owned strings for concurrent processing
+            let files_to_delete_owned: HashSet<String> = files_to_delete.iter().map(|s| s.to_string()).collect();
+            let files_to_add_owned: HashSet<String> = files_to_add.iter().map(|s| s.to_string()).collect();
+            let files_to_add_len = files_to_add_owned.len();
+
+            // Use Arc<tokio::sync::Mutex> for shared state across concurrent tasks
+            let files_to_delete_shared: Arc<tokio::sync::Mutex<HashSet<String>>> = 
+                Arc::new(tokio::sync::Mutex::new(files_to_delete_owned));
+            let duplicate_files_shared: Arc<tokio::sync::Mutex<Vec<String>>> = 
+                Arc::new(tokio::sync::Mutex::new(Vec::new()));
+            
+            // Cancellation flag to match early exit behavior
+            let should_continue: Arc<tokio::sync::Mutex<bool>> = 
+                Arc::new(tokio::sync::Mutex::new(true));
+
+            // Get object cache for efficient manifest loading (cached)
+            let object_cache = table.object_cache();
+
+            // Get concurrency limit
+            let concurrency_limit = std::cmp::min(
+                available_parallelism().get(),
+                manifest_list.entries().len()
+            );
+
+            // Create a stream of manifest loading futures
+            // Collect entries into Vec to avoid lifetime issues and use into_iter for owned values
+            let manifest_entries: Vec<_> = manifest_list.entries().to_vec();
+            let files_to_delete_shared_clone = files_to_delete_shared.clone();
+            let duplicate_files_shared_clone = duplicate_files_shared.clone();
+            let files_to_add_owned_clone = files_to_add_owned.clone();
+            let should_continue_clone = should_continue.clone();
+            let files_to_add_len_clone = files_to_add_len;
+            
+            let manifest_futures = futures::stream::iter(manifest_entries.into_iter())
+                .map(move |manifest_list_entry| {
+                    let object_cache = object_cache.clone();
+                    let files_to_delete_clone = files_to_delete_shared_clone.clone();
+                    let duplicate_files_clone = duplicate_files_shared_clone.clone();
+                    let files_to_add_clone = files_to_add_owned_clone.clone();
+                    let should_continue_clone = should_continue_clone.clone();
+                    let files_to_add_len = files_to_add_len_clone;
+
+                    async move {
+                        // Check if we should continue processing (quick check without heavy work)
+                        {
+                            let continue_flag = should_continue_clone.lock().await;
+                            if !*continue_flag {
+                                return Ok::<(), Error>(());
+                            }
+                        }
+
+                        // Load manifest using object cache (cached, much faster)
+                        let manifest = object_cache.get_manifest(&manifest_list_entry).await?;
+                        
+                        // Get a snapshot of files_to_delete once (before processing entries)
+                        // This avoids locking for every entry check
+                        let files_to_delete_snapshot: HashSet<String> = {
+                            let to_delete = files_to_delete_clone.lock().await;
+                            to_delete.clone()
+                        };
+                        
+                        // Batch process all entries from this manifest first
+                        // This avoids locking/unlocking mutex for every entry
+                        let mut local_duplicates = Vec::new();
+                        let mut found_deletes = HashSet::new();
+
+                        for entry in manifest.entries() {
+                            if !entry.is_alive() {
+                                continue;
+                            }
+
+                            let file_path = entry.file_path().to_string();
+
+                            // Check for duplicate adds (no lock needed - just local collection)
+                            if files_to_add_clone.contains(&file_path) {
+                                local_duplicates.push(file_path.clone());
+                            }
+
+                            // Track found deletes (no lock needed - using snapshot)
+                            if files_to_delete_snapshot.contains(&file_path) {
+                                found_deletes.insert(file_path);
+                            }
+                        }
+
+                        // Now update shared state ONCE per manifest (not per entry)
+                        // This dramatically reduces mutex contention
+                        {
+                            let mut dupes = duplicate_files_clone.lock().await;
+                            dupes.extend(local_duplicates);
+                            
+                            let mut to_delete = files_to_delete_clone.lock().await;
+                            for file_path in found_deletes {
+                                to_delete.remove(&file_path);
+                            }
+                            
+                            // Check if we can early exit (matching original behavior)
+                            if dupes.len() == files_to_add_len && to_delete.is_empty() {
+                                let mut continue_flag = should_continue_clone.lock().await;
+                                *continue_flag = false;
+                            }
+                        }
+
+                        Ok(())
+                    }
+                })
+                .buffer_unordered(concurrency_limit);
+
+            // Process all manifests concurrently (but with early cancellation)
+            manifest_futures.try_collect::<Vec<_>>().await?;
+
+            // Extract results from shared state
+            duplicate_files = duplicate_files_shared.lock().await.clone();
+            files_to_delete_remaining = files_to_delete_shared.lock().await.clone();
+        }
+
+        // Validate no duplicate files are being added
+        // EXACT same error message and ErrorKind as original
+        if !duplicate_files.is_empty() {
+            return Err(Error::new(
+                ErrorKind::DataInvalid,
+                format!(
+                    "Cannot add files that are already referenced by table, files: {}",
+                    duplicate_files.join(", ")
+                ),
+            ));
+        }
+
+        // Any remaining files in files_to_delete don't exist in the snapshot
+        // EXACT same error message and ErrorKind as original
+        if !files_to_delete_remaining.is_empty() {
+            let non_existent_files: Vec<String> =
+                files_to_delete_remaining.iter().cloned().collect();
 
             return Err(Error::new(
                 ErrorKind::DataInvalid,

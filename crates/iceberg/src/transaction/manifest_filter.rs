@@ -125,6 +125,11 @@ pub struct ManifestFilterManager {
 
     file_io: FileIO,
     writer_context: ManifestWriterContext,
+
+    /// External manifest cache shared with SnapshotProducer.
+    /// When set, manifests are loaded from this cache instead of fetching from storage.
+    /// Key: manifest file path, Value: loaded Manifest
+    external_manifest_cache: Option<HashMap<String, crate::spec::Manifest>>,
 }
 
 impl ManifestFilterManager {
@@ -140,7 +145,30 @@ impl ManifestFilterManager {
             removed_data_file_path: HashSet::new(),
             file_io,
             writer_context,
+            external_manifest_cache: None,
         }
+    }
+
+    /// Set an external manifest cache to avoid duplicate I/O.
+    /// When set, manifests are loaded from this cache instead of fetching from storage.
+    /// This is typically populated by RewriteFilesOperationConcurrent.
+    pub fn set_manifest_cache(&mut self, cache: HashMap<String, crate::spec::Manifest>) {
+        self.external_manifest_cache = Some(cache);
+    }
+
+    /// Load a manifest, using the external cache if available.
+    async fn load_manifest_cached(
+        &self,
+        manifest_file: &ManifestFile,
+    ) -> Result<crate::spec::Manifest> {
+        // Try external cache first
+        if let Some(cache) = &self.external_manifest_cache {
+            if let Some(manifest) = cache.get(&manifest_file.manifest_path) {
+                return Ok(manifest.clone());
+            }
+        }
+        // Fall back to loading from storage
+        manifest_file.load_manifest(&self.file_io).await
     }
 
     /// Set whether to fail if any delete operation is attempted
@@ -254,8 +282,8 @@ impl ManifestFilterManager {
         table_schema: &Schema,
         manifest: ManifestFile,
     ) -> Result<ManifestFile> {
-        // Load the original manifest
-        let original_manifest = manifest.load_manifest(&self.file_io).await?;
+        // Load the original manifest (using cache if available)
+        let original_manifest = self.load_manifest_cached(&manifest).await?;
 
         let (entries, manifest_meta_data) = original_manifest.into_parts();
 
@@ -393,7 +421,8 @@ impl ManifestFilterManager {
     }
 
     async fn manifest_has_deleted_files(&self, manifest_file: &ManifestFile) -> Result<bool> {
-        let manifest = manifest_file.load_manifest(&self.file_io).await?;
+        // Use cached manifest if available
+        let manifest = self.load_manifest_cached(manifest_file).await?;
 
         let is_delete = manifest_file.content == ManifestContentType::Deletes;
 

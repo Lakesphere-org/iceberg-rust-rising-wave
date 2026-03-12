@@ -83,6 +83,16 @@ impl DeleteFileIndex {
         (DeleteFileIndex { state }, tx)
     }
 
+    /// Creates a `DeleteFileIndex` pre-populated with the given delete file contexts.
+    /// Used for stream-based scanning where delete files are loaded upfront before
+    /// processing data files. Pass an empty Vec for tables with no delete files.
+    pub(crate) fn from_contexts(contexts: Vec<DeleteFileContext>) -> DeleteFileIndex {
+        let state = Arc::new(RwLock::new(DeleteFileIndexState::Populated(
+            PopulatedDeleteFileIndex::new(contexts),
+        )));
+        DeleteFileIndex { state }
+    }
+
     /// Gets all the delete files that apply to the specified data file.
     pub(crate) async fn get_deletes_for_data_file(
         &self,

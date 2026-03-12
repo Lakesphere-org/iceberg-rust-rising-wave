@@ -166,6 +166,7 @@ impl SchemaVisitor for GlueSchemaBuilder {
             PrimitiveType::Timestamp => "timestamp".to_string(),
             PrimitiveType::TimestampNs => "timestamp_ns".to_string(),
             PrimitiveType::TimestamptzNs => "timestamptz_ns".to_string(),
+            PrimitiveType::Timestamptz => "timestamp".to_string(),  // Add this - same as Timestamp
             PrimitiveType::Time | PrimitiveType::String | PrimitiveType::Uuid => {
                 "string".to_string()
             }

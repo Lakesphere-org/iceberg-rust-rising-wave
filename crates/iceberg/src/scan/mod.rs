@@ -25,11 +25,13 @@ pub use task::*;
 mod task;
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use arrow_array::RecordBatch;
 use futures::channel::mpsc::{Sender, channel};
 use futures::stream::BoxStream;
 use futures::{SinkExt, StreamExt, TryStreamExt};
+use tracing::{debug, info, instrument, warn};
 
 use crate::arrow::ArrowReaderBuilder;
 use crate::delete_file_index::DeleteFileIndex;
@@ -360,6 +362,14 @@ pub struct TableScan {
     row_selection_enabled: bool,
 }
 
+/// Statistics for manifest processing performance monitoring
+struct ManifestProcessingStats {
+    total_tasks: u64,
+    total_entries_processed: u64,
+    total_entries_filtered: u64,
+    manifest_load_times: Vec<(usize, std::time::Duration, usize)>,
+}
+
 impl TableScan {
     /// Returns a stream of [`FileScanTask`]s.
     pub async fn plan_files(&self) -> Result<FileScanTaskStream> {
@@ -457,6 +467,267 @@ impl TableScan {
         });
 
         Ok(file_scan_task_rx.boxed())
+    }
+
+    /// Returns a stream of [`FileScanTask`]s using pure streams (no channels).
+    ///
+    /// This is an alternative implementation that uses `async_stream::try_stream!`
+    /// for true streaming without any channel overhead or backpressure issues.
+    /// Based on the approach from PR 1486.
+    #[instrument(skip(self), level = "debug")]
+    pub async fn plan_files_streams(&self) -> Result<FileScanTaskStream> {
+        let Some(plan_context) = self.plan_context.as_ref() else {
+            debug!("No plan context available, returning empty stream");
+            return Ok(Box::pin(futures::stream::empty()) as FileScanTaskStream);
+        };
+
+        let concurrency_limit_manifest_files = self.concurrency_limit_manifest_files;
+        info!(
+            concurrency_limit = concurrency_limit_manifest_files,
+            "Starting plan_files_streams"
+        );
+
+        let manifest_list_start = Instant::now();
+        let manifest_list = plan_context.get_manifest_list().await?;
+        debug!(
+            elapsed_ms = manifest_list_start.elapsed().as_millis(),
+            "Loaded manifest list"
+        );
+
+        // First, load delete file contexts from delete manifests
+        let delete_load_start = Instant::now();
+        let delete_contexts = plan_context
+            .load_delete_file_contexts_for_streams(&manifest_list)
+            .await?;
+        let num_delete_files = delete_contexts.len();
+        debug!(
+            num_delete_files = num_delete_files,
+            elapsed_ms = delete_load_start.elapsed().as_millis(),
+            "Loaded delete file contexts"
+        );
+
+        // Build the delete file index from the loaded contexts
+        let delete_file_index = DeleteFileIndex::from_contexts(delete_contexts);
+
+        // Build manifest file contexts for streaming (without channels)
+        let build_contexts_start = Instant::now();
+        let manifest_file_contexts = plan_context
+            .build_manifest_file_contexts_for_streams(manifest_list, delete_file_index)
+            .await?;
+        let num_manifests = manifest_file_contexts.len();
+        info!(
+            num_manifests = num_manifests,
+            elapsed_ms = build_contexts_start.elapsed().as_millis(),
+            "Built manifest file contexts"
+        );
+
+        // Create the stream using async_stream::try_stream! for true streaming
+        let expression_evaluator_cache = plan_context.expression_evaluator_cache.clone();
+
+        // Use Arc<tokio::sync::Mutex<>> for shared state that can be mutated from within the stream
+        // Using tokio::sync::Mutex instead of std::sync::Mutex to avoid blocking in async context
+        let stats = Arc::new(tokio::sync::Mutex::new(ManifestProcessingStats {
+            total_tasks: 0,
+            total_entries_processed: 0,
+            total_entries_filtered: 0,
+            manifest_load_times: Vec::with_capacity(num_manifests),
+        }));
+
+        let stats_clone = stats.clone();
+        // Note: We'll calculate elapsed time at the end using a new Instant
+        let stream_start = Instant::now();
+
+        info!(
+            num_manifests = num_manifests,
+            concurrency = concurrency_limit_manifest_files,
+            "Starting to process manifests concurrently"
+        );
+
+        // Collect contexts into Vec to avoid move issues
+        let manifest_file_contexts_vec: Vec<_> = manifest_file_contexts;
+        let num_contexts = manifest_file_contexts_vec.len();
+        
+        info!("About to create async_stream with {} contexts", num_contexts);
+        
+        // Clone what we need for the stream
+        let expression_evaluator_cache_clone = expression_evaluator_cache.clone();
+        let stats_clone_for_stream = stats_clone.clone();
+        let stream_start_clone = stream_start;
+        let num_manifests_clone = num_manifests;
+        
+        let stream = async_stream::try_stream! {
+            info!("Stream execution started - entering async_stream block");
+            
+            // Process manifest files with controlled concurrency
+            info!(
+                num_contexts = num_contexts,
+                "Creating manifest futures stream"
+            );
+            
+            let mut manifest_futures = futures::stream::iter(manifest_file_contexts_vec.into_iter().enumerate())
+                .map(|(idx, ctx)| async move {
+                    debug!(manifest_idx = idx, "Starting manifest load");
+                    let manifest_load_start = Instant::now();
+                    let result = ctx.fetch_manifest_entries_vec().await;
+                    let load_duration = manifest_load_start.elapsed();
+                    debug!(
+                        manifest_idx = idx,
+                        load_ms = load_duration.as_millis(),
+                        "Completed manifest load"
+                    );
+                    (idx, result, load_duration)
+                })
+                .buffer_unordered(concurrency_limit_manifest_files);
+            
+            info!("Created buffer_unordered stream, starting to poll");
+
+            // Process each manifest's entries as they complete
+            info!("About to call manifest_futures.next().await for the first time");
+            while let Some((manifest_idx, entries_result, load_duration)) = manifest_futures.next().await {
+                let entries = entries_result?;
+                let num_entries = entries.len();
+                
+                {
+                    let mut stats = stats_clone_for_stream.lock().await;
+                    stats.manifest_load_times.push((manifest_idx, load_duration, num_entries));
+                }
+                
+                debug!(
+                    manifest_idx = manifest_idx,
+                    num_entries = num_entries,
+                    load_ms = load_duration.as_millis(),
+                    "Loaded manifest entries"
+                );
+
+                let process_start = Instant::now();
+                let mut tasks_from_manifest = 0u64;
+                let mut entries_processed = 0u64;
+                let mut entries_filtered = 0u64;
+
+                for entry_ctx in entries {
+                    entries_processed += 1;
+                    {
+                        let mut stats = stats_clone_for_stream.lock().await;
+                        stats.total_entries_processed += 1;
+                    }
+
+                    // Skip deleted entries
+                    if !entry_ctx.manifest_entry.is_alive() {
+                        entries_filtered += 1;
+                        {
+                            let mut stats = stats_clone_for_stream.lock().await;
+                            stats.total_entries_filtered += 1;
+                        }
+                        continue;
+                    }
+
+                    // Skip delete files (only process data files)
+                    if entry_ctx.manifest_entry.content_type() != DataContentType::Data {
+                        entries_filtered += 1;
+                        {
+                            let mut stats = stats_clone_for_stream.lock().await;
+                            stats.total_entries_filtered += 1;
+                        }
+                        continue;
+                    }
+
+                    // Apply partition and metrics filtering
+                    if let Some(ref bound_predicates) = entry_ctx.bound_predicates {
+                        let BoundPredicates {
+                            snapshot_bound_predicate: snap_pred,
+                            partition_bound_predicate,
+                        } = bound_predicates.as_ref();
+
+                        let expression_evaluator = expression_evaluator_cache_clone.get(
+                            entry_ctx.partition_spec_id,
+                            partition_bound_predicate,
+                        )?;
+
+                        // Skip if partition doesn't match
+                        if !expression_evaluator.eval(entry_ctx.manifest_entry.data_file())? {
+                            entries_filtered += 1;
+                            {
+                                let mut stats = stats_clone_for_stream.lock().await;
+                                stats.total_entries_filtered += 1;
+                            }
+                            continue;
+                        }
+
+                        // Skip if metrics don't match
+                        if !InclusiveMetricsEvaluator::eval(
+                            snap_pred,
+                            entry_ctx.manifest_entry.data_file(),
+                            false,
+                        )? {
+                            entries_filtered += 1;
+                            {
+                                let mut stats = stats_clone_for_stream.lock().await;
+                                stats.total_entries_filtered += 1;
+                            }
+                            continue;
+                        }
+                    }
+
+                    // Convert to FileScanTask and yield it
+                    let task = entry_ctx.into_file_scan_task().await?;
+                    tasks_from_manifest += 1;
+                    {
+                        let mut stats = stats_clone_for_stream.lock().await;
+                        stats.total_tasks += 1;
+                    }
+                    yield task;
+                }
+
+                let process_duration = process_start.elapsed();
+                debug!(
+                    manifest_idx = manifest_idx,
+                    tasks_generated = tasks_from_manifest,
+                    entries_processed = entries_processed,
+                    entries_filtered = entries_filtered,
+                    process_ms = process_duration.as_millis(),
+                    "Processed manifest entries"
+                );
+            }
+
+            // Log summary statistics at the end of the stream
+            let final_stats = stats_clone_for_stream.lock().await;
+            let total_elapsed = stream_start_clone.elapsed();
+            let avg_load_time = if !final_stats.manifest_load_times.is_empty() {
+                final_stats.manifest_load_times.iter()
+                    .map(|(_, d, _)| d.as_millis())
+                    .sum::<u128>() as f64 / final_stats.manifest_load_times.len() as f64
+            } else {
+                0.0
+            };
+            let max_load_time = final_stats.manifest_load_times.iter()
+                .map(|(_, d, _)| d.as_millis())
+                .max()
+                .unwrap_or(0);
+
+            info!(
+                total_elapsed_ms = total_elapsed.as_millis(),
+                num_manifests = num_manifests_clone,
+                total_tasks = final_stats.total_tasks,
+                total_entries_processed = final_stats.total_entries_processed,
+                total_entries_filtered = final_stats.total_entries_filtered,
+                avg_manifest_load_ms = avg_load_time,
+                max_manifest_load_ms = max_load_time,
+                "Completed plan_files_streams"
+            );
+
+            if max_load_time as f64 > avg_load_time * 2.0 && num_manifests_clone > 1 {
+                warn!(
+                    max_load_ms = max_load_time,
+                    avg_load_ms = avg_load_time,
+                    "Manifest load time variance detected - some manifests are significantly slower"
+                );
+            }
+            
+            debug!("Stream execution completed - all manifests processed");
+        };
+
+        info!("Stream created successfully, returning to caller");
+        Ok(Box::pin(stream) as FileScanTaskStream)
     }
 
     /// Returns an [`ArrowRecordBatchStream`].
